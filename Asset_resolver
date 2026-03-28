@@ -1,0 +1,10 @@
+def choose_furniture(category, style):
+
+    candidates = []
+
+    for key, item in FURNITURE_CATALOG.items():
+        if item["category"] == category:
+            if style in item["style"]:
+                candidates.append(key)
+
+    return candidates[0]
