@@ -1,5 +1,0 @@
-def spawn_blender_asset(obj_id, location):
-
-    asset = FURNITURE_CATALOG[obj_id]["asset_file"]
-
-    import_asset(asset, location)
