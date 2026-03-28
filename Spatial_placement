@@ -1,0 +1,26 @@
+## Need detected
+↓
+Choose furniture type
+↓
+Select asset from catalog
+↓
+Find valid position
+↓
+Update world state
+↓
+Spawn Blender asset ##
+
+def place_object(category):
+
+    obj_id = choose_furniture(category, world_state["style"])
+
+    data = FURNITURE_CATALOG[obj_id]
+
+    location = find_valid_position(data)
+
+    world_state["objects"].append({
+        "id": obj_id,
+        "location": location
+    })
+
+    spawn_blender_asset(obj_id, location)
