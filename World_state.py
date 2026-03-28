@@ -1,16 +1,9 @@
 world_state = {
     "room": {
         "width": 6,
-        "length": 5,
+        "length": 6,
         "height": 3
     },
-
-    "requirements": [
-        "seating",
-        "surface"
-    ],
-
     "style": "modern",
-
     "objects": []
 }
