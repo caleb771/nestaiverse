@@ -1,7 +1,7 @@
-from .world_state import world_state
-from .furniture_catalog import FURNITURE_CATALOG
-from .asset_resolver import choose_furniture
-from .spatial import compute_bounds, intersects
+from world_state import world_state
+from furniture_catalog import FURNITURE_CATALOG
+from asset_resolver import choose_furniture
+from spatial import compute_bounds, intersects
 
 
 def find_valid_position(data):
