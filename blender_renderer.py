@@ -1,6 +1,6 @@
 import bpy
 import os
-from .furniture_catalog import FURNITURE_CATALOG
+from furniture_catalog import FURNITURE_CATALOG
 
 
 # Project root
