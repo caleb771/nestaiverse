@@ -29,21 +29,10 @@ def create_room():
 # -------------------------
 
 def import_asset(asset_name, location):
-
-    filepath = os.path.join(
-        ASSET_PATH,
-        asset_name,
-        asset_name + ".gltf"
-    )
-
+    filepath = os.path.join(ASSET_PATH, asset_name)
     print("Loading asset:", filepath)
-
     bpy.ops.import_scene.gltf(filepath=filepath)
-
-    imported_objects = bpy.context.selected_objects
-
-    # move root objects only
-    for obj in imported_objects:
+    for obj in bpy.context.selected_objects:
         if obj.parent is None:
             obj.location = location
 
