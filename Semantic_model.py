@@ -1,7 +1,9 @@
+from World_state import world_state
+
 world_state["objects"].append({
-    "id": "chair_modern_01",
-    "category": "seating",
-    "location": (2,0,0),
-    "rotation": (0,0,90),
-    "occupied_space": (0.8,0.8)
+    "id": "bed_agape",
+    "category": "bed",
+    "location": (0, -1, 0),
+    "rotation": (0, 0, 0),
+    "occupied_space": (1.8, 2.1)
 })
