@@ -1,32 +1,29 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 import os
+import json
 
-# ─── CATALOG ──────────────────────────────────────────────────────────────────
-CATALOG = {
-    "bed_agape":   {"file": "bed_agape.gltf",   "category": "bed",        "style": ["modern", "minimal"], "dim": (1.8, 2.1, 0.5),  "clearance": 0.7, "wall": False, "cost": 900},
-    "wardrobe":    {"file": "wardrobe.gltf",     "category": "storage",    "style": ["modern", "classic"], "dim": (1.8, 0.6, 2.1),  "clearance": 0.8, "wall": True,  "cost": 500},
-    "shelf_wood":  {"file": "shelf_wood.gltf",   "category": "storage",    "style": ["modern", "classic"], "dim": (0.9, 0.35, 1.8), "clearance": 0.5, "wall": True,  "cost": 150},
-    "wall_mirror": {"file": "wall_mirror.gltf",  "category": "wall_decor", "style": ["modern", "minimal"], "dim": (0.6, 0.05, 1.2), "clearance": 0.3, "wall": True,  "cost": 80},
-    "wall_shelf":  {"file": "wall_shelf.gltf",   "category": "wall_decor", "style": ["modern", "minimal"], "dim": (0.8, 0.2, 0.15), "clearance": 0.2, "wall": True,  "cost": 60},
-    "carpet":      {"file": "carpet.gltf",       "category": "floor_decor","style": ["modern", "classic"], "dim": (2.0, 3.0, 0.02), "clearance": 0.0, "wall": False, "cost": 200},
-    "curtains":    {"file": "curtains.gltf",     "category": "window",     "style": ["modern", "classic"], "dim": (1.5, 0.1, 2.4),  "clearance": 0.1, "wall": True,  "cost": 120},
-}
+# ─── LOAD MOCK CATALOG ────────────────────────────────────────────────────────
+CATALOG_PATH = os.path.join(os.path.dirname(__file__), "mock_catalog.json")
+with open(CATALOG_PATH) as f:
+    RETAILER_DATA = json.load(f)
+
+PRODUCTS = RETAILER_DATA["products"]
 
 WALL_HEIGHTS = {
-    "wall_mirror": 1.5,
-    "wall_shelf":  1.6,
-    "curtains":    1.2,
+    "wall_decor": 1.5,
+    "window":     1.2,
 }
 
 # ─── SPATIAL ENGINE ───────────────────────────────────────────────────────────
 def compute_bounds(loc, dim):
     x, y = loc
-    w, l = dim[0], dim[1]
-    return {"min_x": x - w/2, "max_x": x + w/2, "min_y": y - l/2, "max_y": y + l/2}
+    w, l = dim["w"], dim["l"]
+    return {"min_x": x - w/2, "max_x": x + w/2,
+            "min_y": y - l/2, "max_y": y + l/2}
 
 def intersects(a, b, gap=0.05):
     return not (
@@ -36,20 +33,19 @@ def intersects(a, b, gap=0.05):
         a["min_y"] >= b["max_y"] + gap
     )
 
-def find_valid_position(obj_id, placed_objects, room, style):
-    data = CATALOG[obj_id]
-    w, l = data["dim"][0], data["dim"][1]
+def find_valid_position(product, placed_objects, room):
+    w = product["dimensions"]["w"]
+    l = product["dimensions"]["l"]
     half = room["w"] / 2 - 0.15
     step = 0.25
 
-    if data["wall"]:
+    if product["wall"]:
         for y_fixed in [-(half - l / 2), half - l / 2]:
             x = -half + w / 2
             while x <= half - w / 2 + 0.01:
                 loc = (round(x, 2), round(y_fixed, 2))
-                bounds = compute_bounds(loc, data["dim"])
-                valid = all(not intersects(bounds, o["bounds"]) for o in placed_objects)
-                if valid:
+                bounds = compute_bounds(loc, product["dimensions"])
+                if all(not intersects(bounds, o["bounds"]) for o in placed_objects):
                     return loc, bounds
                 x += step
     else:
@@ -58,80 +54,102 @@ def find_valid_position(obj_id, placed_objects, room, style):
             y = -half + l / 2
             while y <= half - l / 2 + 0.01:
                 loc = (round(x, 2), round(y, 2))
-                bounds = compute_bounds(loc, data["dim"])
-                valid = all(not intersects(bounds, o["bounds"]) for o in placed_objects)
-                if valid:
+                bounds = compute_bounds(loc, product["dimensions"])
+                if all(not intersects(bounds, o["bounds"]) for o in placed_objects):
                     return loc, bounds
                 y += step
             x += step
 
     return None, None
 
-def choose_furniture(category, style):
-    for key, item in CATALOG.items():
-        if item["category"] == category and style in item.get("style", []):
-            return key
-    for key, item in CATALOG.items():
-        if item["category"] == category:
-            return key
-    return None
+def choose_product(category, style, max_price, placed_skus):
+    # Filter by category, style, budget, stock, not already placed
+    candidates = [
+        p for p in PRODUCTS
+        if p["category"] == category
+        and style in p["style"]
+        and p["price"] <= max_price
+        and p["in_stock"]
+        and p["sku"] not in placed_skus
+    ]
+    if not candidates:
+        # Relax style constraint
+        candidates = [
+            p for p in PRODUCTS
+            if p["category"] == category
+            and p["price"] <= max_price
+            and p["in_stock"]
+            and p["sku"] not in placed_skus
+        ]
+    if not candidates:
+        return None
+    # Pick highest rated
+    return max(candidates, key=lambda p: p["rating"])
 
-def run_placement(room, style, categories):
+def run_placement(room, style, categories, budget):
     placed_objects = []
-    results = []
-    skipped = []
+    results        = []
+    skipped        = []
+    placed_skus    = set()
+
+    # Distribute budget evenly as a per-item max
+    per_item_budget = (budget / len(categories)) * 1.5 if budget else float("inf")
 
     for category in categories:
-        obj_id = choose_furniture(category, style)
-        if not obj_id:
-            skipped.append({"category": category, "reason": "No matching furniture"})
+        max_price = per_item_budget if budget else float("inf")
+        product   = choose_product(category, style, max_price, placed_skus)
+
+        if not product:
+            skipped.append({"category": category, "reason": "No matching product in catalog"})
             continue
 
-        # Don't place the same item twice
-        if any(o["id"] == obj_id for o in placed_objects):
-            skipped.append({"category": category, "reason": f"{obj_id} already placed"})
-            continue
-
-        loc, bounds = find_valid_position(obj_id, placed_objects, room, style)
+        loc, bounds = find_valid_position(product, placed_objects, room)
         if loc is None:
             skipped.append({"category": category, "reason": "No valid position found"})
             continue
 
-        data = CATALOG[obj_id]
+        dim = product["dimensions"]
+        z   = WALL_HEIGHTS.get(product["category"], 0.0)
+        if z > 0:
+            z = z - dim["h"] / 2
 
-        # Compute z position
-        if obj_id in WALL_HEIGHTS:
-            z = WALL_HEIGHTS[obj_id] - data["dim"][2] / 2
-        else:
-            z = 0.0
+        placed_skus.add(product["sku"])
+        placed_objects.append({"id": product["sku"], "bounds": bounds})
 
-        placed_objects.append({"id": obj_id, "location": loc, "bounds": bounds})
         results.append({
-            "id":       obj_id,
-            "category": data["category"],
-            "file":     data["file"],
-            "location": [loc[0], loc[1], z],
-            "rotation": 0.0,
-            "dim":      list(data["dim"]),
-            "wall":     data["wall"],
-            "cost":     data["cost"],
+            "id":          product["sku"],
+            "name":        product["name"],
+            "category":    product["category"],
+            "file":        product["asset_file"],
+            "location":    [loc[0], loc[1], z],
+            "rotation":    0.0,
+            "dim":         [dim["w"], dim["l"], dim["h"]],
+            "wall":        product["wall"],
+            "price":       product["price"],
+            "image_url":   product["image_url"],
+            "product_url": product["product_url"],
+            "rating":      product["rating"],
+            "reviews":     product["reviews"],
         })
 
-    total_cost = sum(r["cost"] for r in results)
+    total_cost = sum(r["price"] for r in results)
     floor_area = room["w"] * room["l"]
     used_area  = sum(r["dim"][0] * r["dim"][1] for r in results)
 
     return {
+        "retailer":   RETAILER_DATA["retailer"],
+        "currency":   RETAILER_DATA["currency"],
         "objects":    results,
         "skipped":    skipped,
         "total_cost": total_cost,
+        "budget":     budget,
         "floor_used": round(used_area / floor_area * 100, 1),
         "room":       room,
         "style":      style,
     }
 
-# ─── API ──────────────────────────────────────────────────────────────────────
-app = FastAPI(title="NestAIverse API", version="0.1.0")
+# ─── APP ──────────────────────────────────────────────────────────────────────
+app = FastAPI(title="NestAIverse API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -140,72 +158,94 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve GLTF assets statically so the frontend can load them
-ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
+ASSETS_DIR = r"C:\Users\USER PC\Documents\nestaiverse\assets"
 if os.path.exists(ASSETS_DIR):
     app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 # ─── MODELS ───────────────────────────────────────────────────────────────────
 class RoomRequest(BaseModel):
-    room:       dict               = {"w": 6, "l": 6, "h": 3}
-    style:      str                = "modern"
-    categories: List[str]         = ["bed", "storage", "floor_decor", "wall_decor", "window"]
-    budget:     Optional[float]   = None
+    room:       dict          = {"w": 6, "l": 6, "h": 3}
+    style:      str           = "modern"
+    categories: List[str]     = ["bed", "storage", "floor_decor", "wall_decor", "window"]
+    budget:     Optional[float] = None
 
-class CatalogItem(BaseModel):
-    id:       str
-    category: str
-    style:    List[str]
-    dim:      List[float]
-    cost:     int
-    wall:     bool
+class CartRequest(BaseModel):
+    skus:       List[str]
+    session_id: Optional[str] = None
 
 # ─── ROUTES ───────────────────────────────────────────────────────────────────
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "NestAIverse API running"}
+    return {
+        "status":   "ok",
+        "version":  "0.2.0",
+        "retailer": RETAILER_DATA["retailer"]
+    }
 
 @app.get("/catalog")
-def get_catalog():
+def get_catalog(
+    category: Optional[str] = Query(None),
+    style:     Optional[str] = Query(None),
+    max_price: Optional[float] = Query(None),
+    in_stock:  bool = Query(True)
+):
+    products = PRODUCTS
+    if category:
+        products = [p for p in products if p["category"] == category]
+    if style:
+        products = [p for p in products if style in p["style"]]
+    if max_price:
+        products = [p for p in products if p["price"] <= max_price]
+    if in_stock:
+        products = [p for p in products if p["in_stock"]]
     return {
-        key: {
-            "id":       key,
-            "category": val["category"],
-            "style":    val["style"],
-            "dim":      list(val["dim"]),
-            "cost":     val["cost"],
-            "wall":     val["wall"],
-            "file":     val["file"],
-        }
-        for key, val in CATALOG.items()
+        "retailer": RETAILER_DATA["retailer"],
+        "currency": RETAILER_DATA["currency"],
+        "count":    len(products),
+        "products": products
     }
 
 @app.post("/furnish")
 def furnish(req: RoomRequest):
-    result = run_placement(req.room, req.style, req.categories)
+    return run_placement(req.room, req.style, req.categories, req.budget)
 
-    # Apply budget filter if provided
-    if req.budget:
-        filtered = []
-        running_cost = 0
-        for obj in result["objects"]:
-            if running_cost + obj["cost"] <= req.budget:
-                filtered.append(obj)
-                running_cost += obj["cost"]
-            else:
-                result["skipped"].append({
-                    "category": obj["category"],
-                    "reason":   f"Exceeds budget (cost: {obj['cost']})"
-                })
-        result["objects"]    = filtered
-        result["total_cost"] = running_cost
-
-    return result
+@app.post("/cart/prepare")
+def prepare_cart(req: CartRequest):
+    """Returns product details for all SKUs — retailer uses this to build the cart"""
+    items = []
+    for sku in req.skus:
+        product = next((p for p in PRODUCTS if p["sku"] == sku), None)
+        if product:
+            items.append({
+                "sku":         product["sku"],
+                "name":        product["name"],
+                "price":       product["price"],
+                "product_url": product["product_url"],
+                "image_url":   product["image_url"],
+            })
+    return {
+        "retailer":    RETAILER_DATA["retailer"],
+        "currency":    RETAILER_DATA["currency"],
+        "items":       items,
+        "total":       sum(i["price"] for i in items),
+        "checkout_url": "https://furniturepalace.co.ke/checkout"
+    }
 
 @app.get("/room/presets")
 def room_presets():
     return {
-        "bedroom_small":  {"w": 4, "l": 4, "h": 2.7},
-        "bedroom_medium": {"w": 6, "l": 6, "h": 3.0},
-        "bedroom_large":  {"w": 8, "l": 8, "h": 3.2},
+        "bedsitter":      {"w": 4,  "l": 4,  "h": 2.7},
+        "bedroom_small":  {"w": 4,  "l": 5,  "h": 2.7},
+        "bedroom_medium": {"w": 6,  "l": 6,  "h": 3.0},
+        "bedroom_large":  {"w": 8,  "l": 8,  "h": 3.2},
+        "studio":         {"w": 10, "l": 8,  "h": 3.0},
+    }
+
+@app.get("/debug")
+def debug():
+    return {
+        "assets_dir": ASSETS_DIR,
+        "exists":     os.path.exists(ASSETS_DIR),
+        "products":   len(PRODUCTS),
+        "retailer":   RETAILER_DATA["retailer"]
     }
